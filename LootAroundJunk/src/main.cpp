@@ -544,7 +544,7 @@ bool EnumReferencesCloseToRef(RE::TESDataHandler* SendHandler, RE::TESObjectREFR
 		acc2);
 }
 
-TESForm* getFormformFile(std::string tempLine)
+TESForm* getFormformFile(std::string tempLine) // txt 파일 라인 처리부분
 {
 	TESForm* form = nullptr;
 
