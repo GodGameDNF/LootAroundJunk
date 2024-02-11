@@ -18,6 +18,9 @@ TESDataHandler* DH = nullptr;
 float getCount;
 float scrapCount;
 
+bool bLootRunning = false;
+BGSStoryManagerQuestNode* questNode = nullptr;
+TESQuest* lootQuest = nullptr;
 Actor* scrapActor = nullptr;
 TESGlobal* gAllGetCount = nullptr;
 
@@ -36,6 +39,7 @@ std::vector<TESForm*> miscSkipList;
 std::vector<TESForm*> ammoSkipList;
 std::vector<TESForm*> alchSkipList;
 
+TESGlobal* gSlowLoot = nullptr;
 TESGlobal* gLootRange = nullptr;
 TESGlobal* gLootYES = nullptr;
 TESGlobal* gLootBox = nullptr;
@@ -227,23 +231,6 @@ void setMiscFilter(std::monostate)  // MCM 잡동사니 재료 필터
 			compoSkipList.push_back(form);
 		}
 	}
-}
-
-template <class Ty>
-Ty SafeWrite64Function(uintptr_t addr, Ty data)
-{
-	DWORD oldProtect;
-	void* _d[2];
-	memcpy(_d, &data, sizeof(data));
-	size_t len = sizeof(_d[0]);
-
-	VirtualProtect((void*)addr, len, PAGE_EXECUTE_READWRITE, &oldProtect);
-	Ty olddata;
-	memset(&olddata, 0, sizeof(Ty));
-	memcpy(&olddata, (void*)addr, len);
-	memcpy((void*)addr, &_d[0], len);
-	VirtualProtect((void*)addr, len, oldProtect, &oldProtect);
-	return olddata;
 }
 
 struct contLootStruct  // 상자템 마지막 정리를 위해 구조체 배열에 저장했다 처리함
@@ -517,6 +504,8 @@ bool FilterContainerSetting(std::monostate, bool bGet)  // 루팅 필터 가구�
 
 void runLooting(std::vector<TESObjectREFR*> refArray)
 {
+	FormOrInventoryObj tempObj;
+
 	for (TESObjectREFR* ref : refArray) {
 		if (ref != p && ref != nullptr) {
 			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref)) {
@@ -543,13 +532,14 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 								stl::enumeration<ENUM_FORM_ID, std::uint8_t> objType = obj->formType;
 
 								// 무기 슬롯이 GrenadeSlot 인지 확인
-								if (type == ENUM_FORM_ID::kWEAP) {
-									TESObjectWEAP* weapon = (TESObjectWEAP*)refBase;
+								if (objType == ENUM_FORM_ID::kWEAP) {
+									TESObjectWEAP* weapon = (TESObjectWEAP*)obj;
 									if (weapon->equipSlot && weapon->equipSlot == GrenadeSlot) {
 										if (gLootFeaturedItem->value == 0 && HasKeywordVM(vm, 0, obj, FeaturedItem))
 											continue;
 
 										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
 									}
 									// 탄약. 기본 필터 검사만 함
 								} else if (objType == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
@@ -560,15 +550,13 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 										}
 									}
 
-									if (gLootFeaturedItem->value == 0 && HasKeywordVM(vm, 0, obj, FeaturedItem))
-										continue;
-
 									if (!ammoSkipList.empty()) {
 										if (std::find(ammoSkipList.begin(), ammoSkipList.end(), obj) != ammoSkipList.end()) {
 											continue;
 										}
 									}
 									contStruct.push_back(contLootStruct(bItem, false));
+									continue;
 									// 잡동사니. MCM 필터 확인과 스크랩 가능 잡동사니인지 확인함
 								} else if (objType == ENUM_FORM_ID::kMISC) {
 									if (!miscGetList.empty()) {
@@ -596,13 +584,16 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 									// 스크랩설정과 잡동사니의 스크랩 재료 정보를 확인하고 스크랩 NPC로 보냄
 									if (gLootScrap->value == 0) {
 										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
 									} else {
 										BSTArray<BSTTuple<TESForm*, BGSTypedFormValuePair::SharedVal>>* checkCompo = ((TESObjectMISC*)obj)->componentData;
 
 										if (HasKeywordVM(vm, 0, obj, UnscrappableObject) || HasKeywordVM(vm, 0, obj, FeaturedItem) || !checkCompo || checkCompo->empty()) {
 											contStruct.push_back(contLootStruct(bItem, false));
+											continue;
 										} else {
 											contStruct.push_back(contLootStruct(bItem, true));
+											continue;
 										}
 									}
 									// 소모품 확인
@@ -623,7 +614,7 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 										}
 									}
 
-									if (ref->HasKeyword(ObjectTypeChem) || ((MagicItem*)obj)->IsMedicine()) {  // 플래그가 의약품인지 확인함
+									if (HasKeywordVM(vm, 0, obj, ObjectTypeChem) || ((MagicItem*)obj)->IsMedicine()) {  // 플래그가 의약품인지 확인함
 										contStruct.push_back(contLootStruct(bItem, false));
 										continue;
 									} else if (gLootNuka->value == 1 && HasKeywordVM(vm, 0, obj, ObjectTypeNukaCola)) {  // 누카콜라 키워드 확인
@@ -651,6 +642,7 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 										}
 									}
 									contStruct.push_back(contLootStruct(bItem, false));
+									continue;
 								}
 							}
 
@@ -663,75 +655,86 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 							for (int i = saveCount - 1; i >= 0; --i) {
 								BGSInventoryItem bItem = contStruct[i].item;
 								TESBoundObject* obj = bItem.object;
-								uint32_t iCount = bItem.GetCount();
 
-								stl::enumeration<ENUM_FORM_ID, std::uint8_t> objType = obj->formType;
+								uint32_t iCount = bItem.GetCount();
 
 								if (!contStruct[i].bScrap) {  // 스크랩 상자로 보내는 작업인지 확인
 									if (i == 0) {
-										FormOrInventoryObj tempObj;
+										++getCount;
 										tempObj.form = obj;
-										getCount++;
 										RemoveItemVM(vm, 0, ref, tempObj, iCount, true, p);
+										continue;
 									} else {
+										++getCount;
 										TESObjectREFR::RemoveItemData* rData = new TESObjectREFR::RemoveItemData(obj, iCount);
 										rData->reason = ITEM_REMOVE_REASON::KDropping;
 										ObjectRefHandle dropRef = ref->RemoveItem(*rData);
-										getCount++;
 										PlayerPickUpObject(p, dropRef.get().get(), iCount, false);
 										delete rData;
+										continue;
 									}
 								} else {
 									if (i == 0) {
-										FormOrInventoryObj tempObj;
+										++scrapCount;
 										tempObj.form = obj;
-										scrapCount++;
 										RemoveItemVM(vm, 0, ref, tempObj, iCount, true, scrapActor);
+										continue;
 									} else {
+										++scrapCount;
 										TESObjectREFR::RemoveItemData* rData = new TESObjectREFR::RemoveItemData(obj, iCount);
 										rData->reason = ITEM_REMOVE_REASON::kStoreContainer;
 										rData->a_otherContainer = scrapActor;
-										scrapCount++;
 										ref->RemoveItem(*rData);
 										delete rData;
+										continue;
 									}
 								}
 							}
 						}
 					}
 					//// 필드 아이템 처리부분. 아이템습득 메세지 안나오게 버린후 주워먹기
-				} else if (GetQuestObject(ref)) {  // 퀘스트 아이템이면 리턴
-					continue;
 				} else if (type == ENUM_FORM_ID::kWEAP) {
+					if (GetQuestObject(ref))
+						continue;
+
 					TESObjectWEAP* weapon = (TESObjectWEAP*)refBase;
 					if (weapon->equipSlot && weapon->equipSlot == GrenadeSlot) {
-						if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem))
+						if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem)) {
 							continue;
-
-						PlayerPickUpObject(p, ref, GetCount(ref), false);
-					}
-				} else if (type == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
-					if (!ammoGetList.empty()) {
-						if (std::find(ammoGetList.begin(), ammoGetList.end(), refBase) != ammoGetList.end()) {
-							getCount++;
+						} else {
+							++getCount;
 							PlayerPickUpObject(p, ref, GetCount(ref), false);
 							continue;
 						}
 					}
-
-					if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem))
+				} else if (type == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
+					if (GetQuestObject(ref))
 						continue;
+
+					if (!ammoGetList.empty()) {
+						if (std::find(ammoGetList.begin(), ammoGetList.end(), refBase) != ammoGetList.end()) {
+							++getCount;
+							PlayerPickUpObject(p, ref, GetCount(ref), false);
+							continue;
+						}
+					}
 
 					if (!ammoSkipList.empty()) {
 						if (std::find(ammoSkipList.begin(), ammoSkipList.end(), refBase) != ammoSkipList.end()) {
 							continue;
 						}
 					}
+
+					++getCount;
 					PlayerPickUpObject(p, ref, GetCount(ref), false);
+					continue;
 				} else if (type == ENUM_FORM_ID::kMISC) {
+					if (GetQuestObject(ref))
+						continue;
+
 					if (!miscGetList.empty()) {
 						if (std::find(miscGetList.begin(), miscGetList.end(), refBase) != miscGetList.end()) {
-							getCount++;
+							++getCount;
 							PlayerPickUpObject(p, ref, GetCount(ref), false);
 							continue;
 						}
@@ -753,23 +756,29 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 					}
 
 					if (gLootScrap->value == 0) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
+						continue;
 					} else {
 						BSTArray<BSTTuple<TESForm*, BGSTypedFormValuePair::SharedVal>>* checkCompo = ((TESObjectMISC*)refBase)->componentData;
 
 						if (ref->HasKeyword(UnscrappableObject) || ref->HasKeyword(FeaturedItem) || !checkCompo || checkCompo->empty()) {
-							getCount++;
+							++getCount;
 							PlayerPickUpObject(p, ref, GetCount(ref), false);
+							continue;
 						} else {
-							scrapCount++;
+							++scrapCount;
 							PickUpObject(scrapActor, ref, GetCount(ref), false);
+							continue;
 						}
 					}
 				} else if (type == ENUM_FORM_ID::kALCH) {
+					if (GetQuestObject(ref))
+						continue;
+
 					if (!alchGetList.empty()) {
 						if (std::find(alchGetList.begin(), alchGetList.end(), refBase) != alchGetList.end()) {
-							getCount++;
+							++getCount;
 							PlayerPickUpObject(p, ref, GetCount(ref), false);
 							continue;
 						}
@@ -785,23 +794,23 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 					}
 
 					if (ref->HasKeyword(ObjectTypeChem) || ((MagicItem*)refBase)->IsMedicine()) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
 					} else if (gLootNuka->value == 1 && ref->HasKeyword(ObjectTypeNukaCola)) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
 					} else if (gLootAlcohol->value == 1 && ref->HasKeyword(Alcohol)) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
 					} else if (gLootMeat->value == 1 && GetCraftingUseSound(refBase) && GetCraftingUseSound(refBase) == meatCheck) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
 					} else if (gLootIngredient->value == 1 && ref->HasKeyword(FruitOrVegetable)) {
-						getCount++;
+						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
 					}
@@ -815,78 +824,390 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 							}
 						}
 					}
-					getCount++;
+					++getCount;
 					PlayerPickUpObject(p, ref, GetCount(ref), false);
+					continue;
 				}
 			}
 		}
 	}
 }
 
-class pickUpHooks : public PlayerCharacter
+void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 {
-public:
-	typedef bool (pickUpHooks::*FnProcessImpacts)(TESObjectREFR*, std::int32_t, bool);
+	FormOrInventoryObj tempObj;
 
-	bool playerPickUpObject(TESObjectREFR* a_objREFR, std::int32_t a_count, bool a_playPickUpSounds)
-	{
-		bool bFunc = false;
-		FnProcessImpacts fn = fnHash.at(*(uintptr_t*)this);
-		if (fn)
-			bFunc = true;
+	for (TESObjectREFR* ref : refArray) {
+		if (ref != p && ref != nullptr) {
+			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref)) {
+				TESBoundObject* refBase = ref->data.objectReference;
+				stl::enumeration<ENUM_FORM_ID, std::uint8_t> type = refBase->formType;
 
-		//auto readConfigStart = std::chrono::high_resolution_clock::now();
+				if ((gLootActor->value == 1 && type == ENUM_FORM_ID::kNPC_ && ref->IsDead(ref)) || (gLootBox->value == 1 && type == ENUM_FORM_ID::kCONT && !isLocked(vm, 0, ref) && GetModel(refBase) != "Markers\\EditorMarkers\\ContainerMarker.nif")) {
+					BGSInventoryList* temp = ref->inventoryList;
+					if (temp) {
+						BSTArray<BGSInventoryItem> list = temp->data;
 
-		if (gLootYES->value != 1) {
-			if (bFunc) {
-				return (this->*fn)(a_objREFR, a_count, a_playPickUpSounds);
+						if ((type == ENUM_FORM_ID::kNPC_ && list.size() > 0) || (type == ENUM_FORM_ID::kCONT && list.size() > 0 && list.size() < 20)) {
+							std::vector<contLootStruct> contStruct;  // 마지막 RemoveItemVM을 위해 구조체 배열에 저장
+
+							for (BGSInventoryItem bItem : list) {
+								if (!CanBePickedUp(&bItem))
+									continue;
+
+								TESBoundObject* obj = bItem.object;
+
+								if (!obj)
+									continue;
+
+								stl::enumeration<ENUM_FORM_ID, std::uint8_t> objType = obj->formType;
+
+								// 무기 슬롯이 GrenadeSlot 인지 확인
+								if (objType == ENUM_FORM_ID::kWEAP) {
+									TESObjectWEAP* weapon = (TESObjectWEAP*)obj;
+									if (weapon->equipSlot && weapon->equipSlot == GrenadeSlot) {
+										if (gLootFeaturedItem->value == 0 && HasKeywordVM(vm, 0, obj, FeaturedItem))
+											continue;
+
+										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
+									}
+									// 탄약. 기본 필터 검사만 함
+								} else if (objType == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
+									if (!ammoGetList.empty()) {
+										if (std::find(ammoGetList.begin(), ammoGetList.end(), obj) != ammoGetList.end()) {
+											contStruct.push_back(contLootStruct(bItem, false));
+											continue;
+										}
+									}
+
+									if (!ammoSkipList.empty()) {
+										if (std::find(ammoSkipList.begin(), ammoSkipList.end(), obj) != ammoSkipList.end()) {
+											continue;
+										}
+									}
+									contStruct.push_back(contLootStruct(bItem, false));
+									continue;
+									// 잡동사니. MCM 필터 확인과 스크랩 가능 잡동사니인지 확인함
+								} else if (objType == ENUM_FORM_ID::kMISC) {
+									if (!miscGetList.empty()) {
+										if (std::find(miscGetList.begin(), miscGetList.end(), obj) != miscGetList.end()) {
+											contStruct.push_back(contLootStruct(bItem, false));
+											continue;
+										}
+									}
+
+									if (gLootFeaturedItem->value == 0 && HasKeywordVM(vm, 0, obj, FeaturedItem))
+										continue;
+
+									if (!compoSkipList.empty()) {
+										if (std::find(compoSkipList.begin(), compoSkipList.end(), obj) != compoSkipList.end()) {
+											continue;
+										}
+									}
+
+									if (!miscSkipList.empty()) {
+										if (std::find(miscSkipList.begin(), miscSkipList.end(), obj) != miscSkipList.end()) {
+											continue;
+										}
+									}
+
+									// 스크랩설정과 잡동사니의 스크랩 재료 정보를 확인하고 스크랩 NPC로 보냄
+									if (gLootScrap->value == 0) {
+										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
+									} else {
+										BSTArray<BSTTuple<TESForm*, BGSTypedFormValuePair::SharedVal>>* checkCompo = ((TESObjectMISC*)obj)->componentData;
+
+										if (HasKeywordVM(vm, 0, obj, UnscrappableObject) || HasKeywordVM(vm, 0, obj, FeaturedItem) || !checkCompo || checkCompo->empty()) {
+											contStruct.push_back(contLootStruct(bItem, false));
+											continue;
+										} else {
+											contStruct.push_back(contLootStruct(bItem, true));
+											continue;
+										}
+									}
+									// 소모품 확인
+								} else if (objType == ENUM_FORM_ID::kALCH) {
+									if (!alchGetList.empty()) {
+										if (std::find(alchGetList.begin(), alchGetList.end(), obj) != alchGetList.end()) {
+											contStruct.push_back(contLootStruct(bItem, false));
+											continue;
+										}
+									}
+
+									if (gLootFeaturedItem->value == 0 && HasKeywordVM(vm, 0, obj, FeaturedItem))
+										continue;
+
+									if (!alchSkipList.empty()) {
+										if (std::find(alchSkipList.begin(), alchSkipList.end(), obj) != alchSkipList.end()) {
+											continue;
+										}
+									}
+
+									if (HasKeywordVM(vm, 0, obj, ObjectTypeChem) || ((MagicItem*)obj)->IsMedicine()) {  // 플래그가 의약품인지 확인함
+										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
+									} else if (gLootNuka->value == 1 && HasKeywordVM(vm, 0, obj, ObjectTypeNukaCola)) {  // 누카콜라 키워드 확인
+										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
+									} else if (gLootAlcohol->value == 1 && HasKeywordVM(vm, 0, obj, Alcohol)) {  // 알코올 키워드 확인
+										contStruct.push_back(contLootStruct(bItem, false));
+										continue;
+									} else if (gLootMeat->value == 1 && GetCraftingUseSound(obj) && GetCraftingUseSound(obj) == meatCheck) {
+										contStruct.push_back(contLootStruct(bItem, false));  // 크래프팅 사운드가 고기소리인지 확인
+										continue;
+									} else if (gLootIngredient->value == 1 && HasKeywordVM(vm, 0, obj, FruitOrVegetable)) {
+										contStruct.push_back(contLootStruct(bItem, false));  // 음식재료 키워드 확인
+										continue;
+									}
+									// 음식 방사능 effect가 있는지 확인
+									if (gLootFood->value == 0 && HasKeywordVM(vm, 0, obj, (ObjectTypeFood))) {
+										BSTArray<EffectItem*> eList = ((MagicItem*)obj)->listOfEffects;
+										if (!eList.empty()) {
+											for (EffectItem* effect : eList) {
+												if (effect->effectSetting == DamageRadiationChem) {
+													continue;
+												}
+											}
+										}
+									}
+									contStruct.push_back(contLootStruct(bItem, false));
+									continue;
+								}
+							}
+
+							int saveCount = contStruct.size();
+
+							if (saveCount == 0)
+								continue;
+
+							/// 상자를 연 상태에서 템창 정리를 위해 마지막은 파피루스 스크립트로 처리
+							for (int i = saveCount - 1; i >= 0; --i) {
+								BGSInventoryItem bItem = contStruct[i].item;
+								TESBoundObject* obj = bItem.object;
+
+								if (!contStruct[i].bScrap) {  // 스크랩 상자로 보내는 작업인지 확인
+									++getCount;
+									tempObj.form = obj;
+									RemoveItemVM(vm, 0, ref, tempObj, bItem.GetCount(), true, p);
+								} else {
+									++scrapCount;
+									tempObj.form = obj;
+									RemoveItemVM(vm, 0, ref, tempObj, bItem.GetCount(), true, scrapActor);
+								}
+							}
+						}
+					}
+					//// 필드 아이템 처리부분. 아이템습득 메세지 안나오게 버린후 주워먹기
+				} else if (type == ENUM_FORM_ID::kWEAP) {
+					if (GetQuestObject(ref))
+						continue;
+
+					TESObjectWEAP* weapon = (TESObjectWEAP*)refBase;
+					if (weapon->equipSlot && weapon->equipSlot == GrenadeSlot) {
+						if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem)) {
+							continue;
+						} else {
+							++getCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+							continue;
+						}
+					}
+				} else if (type == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
+					if (GetQuestObject(ref))
+						continue;
+
+					if (!ammoGetList.empty()) {
+						if (std::find(ammoGetList.begin(), ammoGetList.end(), refBase) != ammoGetList.end()) {
+							++getCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+							continue;
+						}
+					}
+
+					if (!ammoSkipList.empty()) {
+						if (std::find(ammoSkipList.begin(), ammoSkipList.end(), refBase) != ammoSkipList.end()) {
+							continue;
+						}
+					}
+
+					++getCount;
+					tempObj.form = ref;
+					AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+					continue;
+				} else if (type == ENUM_FORM_ID::kMISC) {
+					if (GetQuestObject(ref))
+						continue;
+
+					if (!miscGetList.empty()) {
+						if (std::find(miscGetList.begin(), miscGetList.end(), refBase) != miscGetList.end()) {
+							++getCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+							continue;
+						}
+					}
+
+					if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem))
+						continue;
+
+					if (!compoSkipList.empty()) {
+						if (std::find(compoSkipList.begin(), compoSkipList.end(), refBase) != compoSkipList.end()) {
+							continue;
+						}
+					}
+
+					if (!miscSkipList.empty()) {
+						if (std::find(miscSkipList.begin(), miscSkipList.end(), refBase) != miscSkipList.end()) {
+							continue;
+						}
+					}
+
+					if (gLootScrap->value == 0) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					} else {
+						BSTArray<BSTTuple<TESForm*, BGSTypedFormValuePair::SharedVal>>* checkCompo = ((TESObjectMISC*)refBase)->componentData;
+
+						if (ref->HasKeyword(UnscrappableObject) || ref->HasKeyword(FeaturedItem) || !checkCompo || checkCompo->empty()) {
+							++getCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+							continue;
+						} else {
+							++scrapCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, scrapActor, tempObj, GetCount(ref), true);
+							continue;
+						}
+					}
+				} else if (type == ENUM_FORM_ID::kALCH) {
+					if (GetQuestObject(ref))
+						continue;
+
+					if (!alchGetList.empty()) {
+						if (std::find(alchGetList.begin(), alchGetList.end(), refBase) != alchGetList.end()) {
+							++getCount;
+							tempObj.form = ref;
+							AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+							continue;
+						}
+					}
+
+					if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem))
+						continue;
+
+					if (!alchSkipList.empty()) {
+						if (std::find(alchSkipList.begin(), alchSkipList.end(), refBase) != alchSkipList.end()) {
+							continue;
+						}
+					}
+
+					if (ref->HasKeyword(ObjectTypeChem) || ((MagicItem*)refBase)->IsMedicine()) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					} else if (gLootNuka->value == 1 && ref->HasKeyword(ObjectTypeNukaCola)) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					} else if (gLootAlcohol->value == 1 && ref->HasKeyword(Alcohol)) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					} else if (gLootMeat->value == 1 && GetCraftingUseSound(refBase) && GetCraftingUseSound(refBase) == meatCheck) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					} else if (gLootIngredient->value == 1 && ref->HasKeyword(FruitOrVegetable)) {
+						++getCount;
+						tempObj.form = ref;
+						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+						continue;
+					}
+					if (gLootFood->value == 0 && ref->HasKeyword(ObjectTypeFood)) {
+						BSTArray<EffectItem*> eList = ((MagicItem*)refBase)->listOfEffects;
+						if (!eList.empty()) {
+							for (EffectItem* effect : eList) {
+								if (effect->effectSetting == DamageRadiationChem) {
+									continue;
+								}
+							}
+						}
+					}
+					++getCount;
+					tempObj.form = ref;
+					AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+					continue;
+				}
 			}
-			return false;
 		}
+	}
+}
 
-		getCount = 0;
-		scrapCount = 0;
+void StartLoot(std::monostate)
+{
+	if (bLootRunning || gLootYES->value != 1) {
+		return;
+	} else {
+		bLootRunning = true;
+	}
 
-		std::vector<TESObjectREFR*> refArray;
+	getCount = 0;
+	scrapCount = 0;
 
-		NiPoint3 point = p->GetPosition();
-		EnumReferencesCloseToRef(DH, p, gLootRange->value, &point, gLootRange->value, nullptr, &refArray);
+	BSTArray<TESQuest*> childRen = questNode->children;
+	if (!childRen.empty()) {
+		int i = childRen.size() - 1;
+		while (i >= 0) {
+			RemoveChild(questNode, childRen[i], 0);
+			--i;
+		}
+	}
 
+	//auto readConfigStart = std::chrono::high_resolution_clock::now();
+
+	std::vector<TESObjectREFR*> refArray;
+
+	NiPoint3 point = p->GetPosition();
+	EnumReferencesCloseToRef(DH, p, gLootRange->value, &point, gLootRange->value, nullptr, &refArray);
+
+	if (gSlowLoot->value == 0) {
+		runLooting_Slow(refArray);
+	} else {
 		runLooting(refArray);
-
-		if (gLootPrint->value != 0) {
-			if (getCount > 0 && scrapCount > 0) {
-				Show(vm, 0, twoMessage, getCount, scrapCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-			} else if (getCount > 0) {
-				Show(vm, 0, getMessage, getCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-			} else if (scrapCount > 0) {
-				Show(vm, 0, sendMessage, scrapCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-			}
-		}
-
-		gAllGetCount->value = gAllGetCount->value + getCount + scrapCount;
-
-		//auto readConfigEnd = std::chrono::high_resolution_clock::now();
-		//std::chrono::duration<double> readConfigDuration = readConfigEnd - readConfigStart;
-
-		//logger::info("ReadConfig execution time: {} seconds", readConfigDuration.count());
-
-		if (bFunc) {
-			return (this->*fn)(a_objREFR, a_count, a_playPickUpSounds);
-		}
-		return false;
 	}
 
-	static void HookProcessImpacts(uintptr_t addr, uintptr_t offset)
-	{
-		FnProcessImpacts fn = SafeWrite64Function(addr + offset, &pickUpHooks::playerPickUpObject);
-		fnHash.insert(std::make_pair(addr, fn));
+	//auto readConfigEnd = std::chrono::high_resolution_clock::now();
+	//std::chrono::duration<double> readConfigDuration = readConfigEnd - readConfigStart;
+
+	//logger::info("ReadConfig execution time: {} seconds", readConfigDuration.count());
+
+	if (gLootPrint->value != 0) {
+		if (getCount > 0 && scrapCount > 0) {
+			Show(vm, 0, twoMessage, getCount, scrapCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		} else if (getCount > 0) {
+			Show(vm, 0, getMessage, getCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		} else if (scrapCount > 0) {
+			Show(vm, 0, sendMessage, scrapCount, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		}
 	}
 
-protected:
-	static std::unordered_map<uintptr_t, FnProcessImpacts> fnHash;
-};
-std::unordered_map<uintptr_t, pickUpHooks::FnProcessImpacts> pickUpHooks::fnHash;
+	gAllGetCount->value = gAllGetCount->value + getCount + scrapCount;
+
+	AddChild(questNode, lootQuest, 0);
+
+	bLootRunning = false;
+}
 
 void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 {
@@ -903,9 +1224,12 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			lootDir = std::string(resultBuf, tInt);
 			lootDir = lootDir.substr(0, lootDir.find_last_of('\\')) + "\\Data\\F4SE\\Plugins\\_LootingFilter\\";
 
+			questNode = (BGSStoryManagerQuestNode*)DH->LookupForm(0x803, "LootAroundJunk.esp");
+			lootQuest = (TESQuest*)DH->LookupForm(0x858, "LootAroundJunk.esp");
 			scrapActor = (Actor*)DH->LookupForm(0x863, "LootAroundJunk.esp");
 			gAllGetCount = (TESGlobal*)DH->LookupForm(0x868, "LootAroundJunk.esp");
 
+			gSlowLoot = (TESGlobal*)DH->LookupForm(0x86F, "LootAroundJunk.esp");
 			gLootRange = (TESGlobal*)DH->LookupForm(0x801, "LootAroundJunk.esp");
 			gLootYES = (TESGlobal*)DH->LookupForm(0x800, "LootAroundJunk.esp");
 			gLootBox = (TESGlobal*)DH->LookupForm(0x802, "LootAroundJunk.esp");
@@ -948,12 +1272,6 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			twoMessage = (BGSMessage*)DH->LookupForm(0x0810, "LootAroundJunk.esp");
 
 			loadFilterSettingsFromFiles();
-
-			uint64_t addr;
-			uint64_t offset = 0x760;
-			addr = PlayerCharacter::VTABLE[0].address();
-			pickUpHooks::HookProcessImpacts(addr, offset);
-
 			break;
 		}
 	case F4SE::MessagingInterface::kPostLoadGame:
@@ -975,12 +1293,13 @@ bool RegisterPapyrusFunctions(RE::BSScript::IVirtualMachine* a_vm)
 {
 	vm = a_vm;
 
-	//REL::IDDatabase::Offset2ID o2i;
-	//logger::info("0x0x2D44048: {}", o2i(0x2D44048));
+	REL::IDDatabase::Offset2ID o2i;
+	logger::info("0x0x499f0: {}", o2i(0x499f0));
 
 	//std::size_t offset = REL::IDDatabase::get().id2offset(1067039);
 	//logger::info("Offset for ID 1067039: {}", offset);
 
+	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "StartLoot"sv, StartLoot);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "FilterContainerSetting"sv, FilterContainerSetting);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "FillContainerfromFile"sv, FillContainerfromFile);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "setMiscFilter"sv, setMiscFilter);
