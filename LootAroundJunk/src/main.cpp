@@ -77,6 +77,7 @@ BGSKeyword* ObjectTypeChem = nullptr;
 EffectSetting* DamageRadiationChem = nullptr;
 EffectSetting* RestoreHealthFood = nullptr;
 TESGlobal* gLootRestoreAmount = nullptr;
+TESGlobal* gLoodRadMult = nullptr;
 
 BGSMessage* getMessage = nullptr;
 BGSMessage* sendMessage = nullptr;
@@ -644,23 +645,42 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 									} else if (gLootRestore->value == 1) {
 										BSTArray<EffectItem*> eList = ((MagicItem*)obj)->listOfEffects;
 										if (!eList.empty()) {
-											bool isRestore = false;
+											bool isLootAlch = false;
+											float healAmount = 0;
+											float radAmount = 0;
+
 											for (EffectItem* effect : eList) {
 												EffectSetting* checkEffect = effect->effectSetting;
 												if (checkEffect == RestoreHealthFood) {
-													if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
-														isRestore = true;
+													isLootAlch = true;
+													if (healAmount <= 0) {
+														healAmount = effect->data.magnitude * effect->data.duration;
 													} else {
+														continue;
+													}
+
+													if (healAmount < gLootRestoreAmount->value) {  // 회복량 확인
+														isLootAlch = false;                        // 회복량 낮으면 루팅안함
 														break;
 													}
-												} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
-													isRestore = false;
-													break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+												} else if (checkEffect == DamageRadiationChem) {
+													if (gLootFood->value == 0) {
+														isLootAlch = false;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+														break;
+													} else {
+														radAmount = effect->data.magnitude;
+													}
 												}
 											}
 
-											if (isRestore) {
-												contStruct.push_back(contLootStruct(bItem, false));
+											if (isLootAlch) {
+												float radMult = 5 + (gLoodRadMult->value * 5);
+
+												if (radAmount <= 0 || radMult >= 35) {
+													contStruct.push_back(contLootStruct(bItem, false));
+												} else if ((radAmount / healAmount) * 100 <= radMult) {
+													contStruct.push_back(contLootStruct(bItem, false));
+												}
 											}
 										}
 									}
@@ -837,25 +857,46 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 					} else if (gLootRestore->value == 1) {
 						BSTArray<EffectItem*> eList = ((MagicItem*)refBase)->listOfEffects;
 						if (!eList.empty()) {
-							bool isRestore = false;
+							bool isLootAlch = false;
+							float healAmount = 0;
+							float radAmount = 0;
+
 							for (EffectItem* effect : eList) {
 								EffectSetting* checkEffect = effect->effectSetting;
 								if (checkEffect == RestoreHealthFood) {
-									if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
-										isRestore = true;
+									isLootAlch = true;
+									if (healAmount <= 0) {
+										healAmount = effect->data.magnitude * effect->data.duration;
 									} else {
+										continue;
+									}
+
+									if (healAmount < gLootRestoreAmount->value) {  // 회복량 확인
+										isLootAlch = false;                        // 회복량 낮으면 루팅안함
 										break;
 									}
-								} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
-									isRestore = false;
-									break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+								} else if (checkEffect == DamageRadiationChem) {
+									if (gLootFood->value == 0) {
+										isLootAlch = false;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+										break;
+									} else {
+										radAmount = effect->data.magnitude;
+									}
 								}
 							}
 
-							if (isRestore) {
-								++getCount;
-								PlayerPickUpObject(p, ref, GetCount(ref), false);
-								continue;
+							if (isLootAlch) {
+								float radMult = 5 + (gLoodRadMult->value * 5);
+
+								if (radAmount <= 0 || radMult >= 35) {
+									++getCount;
+									PlayerPickUpObject(p, ref, GetCount(ref), false);
+									continue;
+								} else if ((radAmount / healAmount) * 100 <= radMult) {
+									++getCount;
+									PlayerPickUpObject(p, ref, GetCount(ref), false);
+									continue;
+								}
 							}
 						}
 					}
@@ -1007,23 +1048,42 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 									} else if (gLootRestore->value == 1) {
 										BSTArray<EffectItem*> eList = ((MagicItem*)obj)->listOfEffects;
 										if (!eList.empty()) {
-											bool isRestore = false;
+											bool isLootAlch = false;
+											float healAmount = 0;
+											float radAmount = 0;
+
 											for (EffectItem* effect : eList) {
 												EffectSetting* checkEffect = effect->effectSetting;
 												if (checkEffect == RestoreHealthFood) {
-													if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
-														isRestore = true;
+													isLootAlch = true;
+													if (healAmount <= 0) {
+														healAmount = effect->data.magnitude * effect->data.duration;
 													} else {
+														continue;
+													}
+
+													if (healAmount < gLootRestoreAmount->value) {  // 회복량 확인
+														isLootAlch = false;                        // 회복량 낮으면 루팅안함
 														break;
 													}
-												} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
-													isRestore = false;
-													break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+												} else if (checkEffect == DamageRadiationChem) {
+													if (gLootFood->value == 0) {
+														isLootAlch = false;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+														break;
+													} else {
+														radAmount = effect->data.magnitude;
+													}
 												}
 											}
 
-											if (isRestore) {
-												contStruct.push_back(contLootStruct(bItem, false));
+											if (isLootAlch) {
+												float radMult = 5 + (gLoodRadMult->value * 5);
+
+												if (radAmount <= 0 || radMult >= 35) {
+													contStruct.push_back(contLootStruct(bItem, false));
+												} else if ((radAmount / healAmount) * 100 <= radMult) {
+													contStruct.push_back(contLootStruct(bItem, false));
+												}
 											}
 										}
 									}
@@ -1176,27 +1236,48 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 					} else if (gLootRestore->value == 1) {
 						BSTArray<EffectItem*> eList = ((MagicItem*)refBase)->listOfEffects;
 						if (!eList.empty()) {
-							bool isRestore = false;
+							bool isLootAlch = false;
+							float healAmount = 0;
+							float radAmount = 0;
+
 							for (EffectItem* effect : eList) {
 								EffectSetting* checkEffect = effect->effectSetting;
 								if (checkEffect == RestoreHealthFood) {
-									if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
-										isRestore = true;
+									isLootAlch = true;
+									if (healAmount <= 0) {
+										healAmount = effect->data.magnitude * effect->data.duration;
 									} else {
-										break;
+										continue;
 									}
 
-								} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
-									isRestore = false;
-									break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+									if (healAmount < gLootRestoreAmount->value) {  // 회복량 확인
+										isLootAlch = false; // 회복량 낮으면 루팅안함
+										break;
+									}
+								} else if (checkEffect == DamageRadiationChem){
+									if (gLootFood->value == 0) {	
+										isLootAlch = false;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
+										break;
+									} else  {
+										radAmount = effect->data.magnitude; 
+									}
 								}
 							}
 
-							if (isRestore) {
-								++getCount;
-								tempObj.form = ref;
-								AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
-								continue;
+							if (isLootAlch) {
+								float radMult = 5 + (gLoodRadMult->value * 5);
+
+								if (radAmount <= 0 || radMult >= 35) {
+									++getCount;
+									tempObj.form = ref;
+									AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+									continue;
+								} else if ((radAmount / healAmount) * 100 <= radMult) {
+									++getCount;
+									tempObj.form = ref;
+									AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+									continue;
+								}
 							}
 						}
 					}
@@ -1319,6 +1400,7 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			ObjectTypeChem = (BGSKeyword*)DH->LookupForm(0x000F4AE7, "Fallout4.esm");
 			gLootRestore = (TESGlobal*)DH->LookupForm(0x870, "LootAroundJunk.esp");
 			gLootRestoreAmount = (TESGlobal*)DH->LookupForm(0x872, "LootAroundJunk.esp");
+			gLoodRadMult = (TESGlobal*)DH->LookupForm(0x873, "LootAroundJunk.esp");
 			DamageRadiationChem = (EffectSetting*)DH->LookupForm(0x024056, "Fallout4.esm");
 			RestoreHealthFood = (EffectSetting*)DH->LookupForm(0x0397E, "Fallout4.esm");
 
