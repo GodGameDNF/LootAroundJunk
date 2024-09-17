@@ -70,10 +70,13 @@ TESGlobal* gLootMeat = nullptr;
 BGSSoundDescriptorForm* meatCheck = nullptr;
 TESGlobal* gLootIngredient = nullptr;
 BGSKeyword* FruitOrVegetable = nullptr;
+TESGlobal* gLootRestore = nullptr;
 TESGlobal* gLootFood = nullptr;
 BGSKeyword* ObjectTypeFood = nullptr;
 BGSKeyword* ObjectTypeChem = nullptr;
 EffectSetting* DamageRadiationChem = nullptr;
+EffectSetting* RestoreHealthFood = nullptr;
+TESGlobal* gLootRestoreAmount = nullptr;
 
 BGSMessage* getMessage = nullptr;
 BGSMessage* sendMessage = nullptr;
@@ -502,13 +505,15 @@ bool FilterContainerSetting(std::monostate, bool bGet)  // 루팅 필터 가구�
 	return true;
 }
 
+
 void runLooting(std::vector<TESObjectREFR*> refArray)
 {
 	FormOrInventoryObj tempObj;
+	std::vector<TESObjectREFR*> alreadyLootBox;
 
 	for (TESObjectREFR* ref : refArray) {
 		if (ref != p && ref != nullptr) {
-			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref)) {
+			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref) && !GetQuestObject(ref)) {
 				TESBoundObject* refBase = ref->data.objectReference;
 				stl::enumeration<ENUM_FORM_ID, std::uint8_t> type = refBase->formType;
 
@@ -518,6 +523,13 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 						BSTArray<BGSInventoryItem> list = temp->data;
 
 						if ((type == ENUM_FORM_ID::kNPC_ && list.size() > 0) || (type == ENUM_FORM_ID::kCONT && list.size() > 0 && list.size() < 20)) {
+
+							if (std::find(alreadyLootBox.begin(), alreadyLootBox.end(), ref) != alreadyLootBox.end()) {
+								continue;
+							} else {
+								alreadyLootBox.push_back(ref);
+							}		
+
 							std::vector<contLootStruct> contStruct;  // 마지막 RemoveItemVM을 위해 구조체 배열에 저장
 
 							for (BGSInventoryItem bItem : list) {
@@ -629,20 +641,29 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 									} else if (gLootIngredient->value == 1 && HasKeywordVM(vm, 0, obj, FruitOrVegetable)) {
 										contStruct.push_back(contLootStruct(bItem, false));  // 음식재료 키워드 확인
 										continue;
-									}
-									// 음식 방사능 effect가 있는지 확인
-									if (gLootFood->value == 0 && HasKeywordVM(vm, 0, obj, (ObjectTypeFood))) {
+									} else if (gLootRestore->value == 1) {
 										BSTArray<EffectItem*> eList = ((MagicItem*)obj)->listOfEffects;
 										if (!eList.empty()) {
+											bool isRestore = false;
 											for (EffectItem* effect : eList) {
-												if (effect->effectSetting == DamageRadiationChem) {
-													continue;
+												EffectSetting* checkEffect = effect->effectSetting;
+												if (checkEffect == RestoreHealthFood) {
+													if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
+														isRestore = true;
+													} else {
+														break;
+													}
+												} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
+													isRestore = false;
+													break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
 												}
+											}
+
+											if (isRestore) {
+												contStruct.push_back(contLootStruct(bItem, false));
 											}
 										}
 									}
-									contStruct.push_back(contLootStruct(bItem, false));
-									continue;
 								}
 							}
 
@@ -813,33 +834,46 @@ void runLooting(std::vector<TESObjectREFR*> refArray)
 						++getCount;
 						PlayerPickUpObject(p, ref, GetCount(ref), false);
 						continue;
-					}
-					if (gLootFood->value == 0 && ref->HasKeyword(ObjectTypeFood)) {
+					} else if (gLootRestore->value == 1) {
 						BSTArray<EffectItem*> eList = ((MagicItem*)refBase)->listOfEffects;
 						if (!eList.empty()) {
+							bool isRestore = false;
 							for (EffectItem* effect : eList) {
-								if (effect->effectSetting == DamageRadiationChem) {
-									continue;
+								EffectSetting* checkEffect = effect->effectSetting;
+								if (checkEffect == RestoreHealthFood) {
+									if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
+										isRestore = true;
+									} else {
+										break;
+									}
+								} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
+									isRestore = false;
+									break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
 								}
+							}
+
+							if (isRestore) {
+								++getCount;
+								PlayerPickUpObject(p, ref, GetCount(ref), false);
+								continue;
 							}
 						}
 					}
-					++getCount;
-					PlayerPickUpObject(p, ref, GetCount(ref), false);
-					continue;
 				}
 			}
 		}
 	}
 }
 
+
 void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 {
 	FormOrInventoryObj tempObj;
+	std::vector<TESObjectREFR*> alreadyLootBox;
 
 	for (TESObjectREFR* ref : refArray) {
 		if (ref != p && ref != nullptr) {
-			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref)) {
+			if (!GetDisabled(ref) && !ref->IsCrimeToActivate() && !IsActivationBlocked(ref) && !GetQuestObject(ref)) {
 				TESBoundObject* refBase = ref->data.objectReference;
 				stl::enumeration<ENUM_FORM_ID, std::uint8_t> type = refBase->formType;
 
@@ -849,10 +883,20 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 						BSTArray<BGSInventoryItem> list = temp->data;
 
 						if ((type == ENUM_FORM_ID::kNPC_ && list.size() > 0) || (type == ENUM_FORM_ID::kCONT && list.size() > 0 && list.size() < 20)) {
+
+							if (std::find(alreadyLootBox.begin(), alreadyLootBox.end(), ref) != alreadyLootBox.end()) {
+								continue;
+							} else {
+								alreadyLootBox.push_back(ref);
+							}
+
 							std::vector<contLootStruct> contStruct;  // 마지막 RemoveItemVM을 위해 구조체 배열에 저장
 
 							for (BGSInventoryItem bItem : list) {
 								if (!CanBePickedUp(&bItem))
+									continue;
+
+								if (GetQuestObject(ref))
 									continue;
 
 								TESBoundObject* obj = bItem.object;
@@ -960,20 +1004,29 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 									} else if (gLootIngredient->value == 1 && HasKeywordVM(vm, 0, obj, FruitOrVegetable)) {
 										contStruct.push_back(contLootStruct(bItem, false));  // 음식재료 키워드 확인
 										continue;
-									}
-									// 음식 방사능 effect가 있는지 확인
-									if (gLootFood->value == 0 && HasKeywordVM(vm, 0, obj, (ObjectTypeFood))) {
+									} else if (gLootRestore->value == 1) {
 										BSTArray<EffectItem*> eList = ((MagicItem*)obj)->listOfEffects;
 										if (!eList.empty()) {
+											bool isRestore = false;
 											for (EffectItem* effect : eList) {
-												if (effect->effectSetting == DamageRadiationChem) {
-													continue;
+												EffectSetting* checkEffect = effect->effectSetting;
+												if (checkEffect == RestoreHealthFood) {
+													if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
+														isRestore = true;
+													} else {
+														break;
+													}
+												} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
+													isRestore = false;
+													break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
 												}
+											}
+
+											if (isRestore) {
+												contStruct.push_back(contLootStruct(bItem, false));
 											}
 										}
 									}
-									contStruct.push_back(contLootStruct(bItem, false));
-									continue;
 								}
 							}
 
@@ -982,7 +1035,6 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 							if (saveCount == 0)
 								continue;
 
-							/// 상자를 연 상태에서 템창 정리를 위해 마지막은 파피루스 스크립트로 처리
 							for (int i = saveCount - 1; i >= 0; --i) {
 								BGSInventoryItem bItem = contStruct[i].item;
 								TESBoundObject* obj = bItem.object;
@@ -1001,9 +1053,6 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 					}
 					//// 필드 아이템 처리부분. 아이템습득 메세지 안나오게 버린후 주워먹기
 				} else if (type == ENUM_FORM_ID::kWEAP) {
-					if (GetQuestObject(ref))
-						continue;
-
 					TESObjectWEAP* weapon = (TESObjectWEAP*)refBase;
 					if (weapon->equipSlot && weapon->equipSlot == GrenadeSlot) {
 						if (gLootFeaturedItem->value == 0 && ref->HasKeyword(FeaturedItem)) {
@@ -1016,9 +1065,6 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 						}
 					}
 				} else if (type == ENUM_FORM_ID::kAMMO && gLootAmmo->value == 1) {
-					if (GetQuestObject(ref))
-						continue;
-
 					if (!ammoGetList.empty()) {
 						if (std::find(ammoGetList.begin(), ammoGetList.end(), refBase) != ammoGetList.end()) {
 							++getCount;
@@ -1039,9 +1085,6 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 					AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
 					continue;
 				} else if (type == ENUM_FORM_ID::kMISC) {
-					if (GetQuestObject(ref))
-						continue;
-
 					if (!miscGetList.empty()) {
 						if (std::find(miscGetList.begin(), miscGetList.end(), refBase) != miscGetList.end()) {
 							++getCount;
@@ -1087,9 +1130,6 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 						}
 					}
 				} else if (type == ENUM_FORM_ID::kALCH) {
-					if (GetQuestObject(ref))
-						continue;
-
 					if (!alchGetList.empty()) {
 						if (std::find(alchGetList.begin(), alchGetList.end(), refBase) != alchGetList.end()) {
 							++getCount;
@@ -1133,21 +1173,33 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 						tempObj.form = ref;
 						AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
 						continue;
-					}
-					if (gLootFood->value == 0 && ref->HasKeyword(ObjectTypeFood)) {
+					} else if (gLootRestore->value == 1) {
 						BSTArray<EffectItem*> eList = ((MagicItem*)refBase)->listOfEffects;
 						if (!eList.empty()) {
+							bool isRestore = false;
 							for (EffectItem* effect : eList) {
-								if (effect->effectSetting == DamageRadiationChem) {
-									continue;
+								EffectSetting* checkEffect = effect->effectSetting;
+								if (checkEffect == RestoreHealthFood) {
+									if ((effect->data.magnitude * effect->data.duration) >= gLootRestoreAmount->value) {  // 회복량 확인
+										isRestore = true;
+									} else {
+										break;
+									}
+
+								} else if (checkEffect == DamageRadiationChem && gLootFood->value == 0) {
+									isRestore = false;
+									break;  // 방사능이 있고 mcm에서 안켰으면 루팅 안함
 								}
+							}
+
+							if (isRestore) {
+								++getCount;
+								tempObj.form = ref;
+								AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
+								continue;
 							}
 						}
 					}
-					++getCount;
-					tempObj.form = ref;
-					AddItemVM(vm, 0, p, tempObj, GetCount(ref), true);
-					continue;
 				}
 			}
 		}
@@ -1265,7 +1317,10 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			gLootFood = (TESGlobal*)DH->LookupForm(0x82E, "LootAroundJunk.esp");
 			ObjectTypeFood = (BGSKeyword*)DH->LookupForm(0x00055ECC, "Fallout4.esm");
 			ObjectTypeChem = (BGSKeyword*)DH->LookupForm(0x000F4AE7, "Fallout4.esm");
+			gLootRestore = (TESGlobal*)DH->LookupForm(0x870, "LootAroundJunk.esp");
+			gLootRestoreAmount = (TESGlobal*)DH->LookupForm(0x872, "LootAroundJunk.esp");
 			DamageRadiationChem = (EffectSetting*)DH->LookupForm(0x024056, "Fallout4.esm");
+			RestoreHealthFood = (EffectSetting*)DH->LookupForm(0x0397E, "Fallout4.esm");
 
 			getMessage = (BGSMessage*)DH->LookupForm(0x0811, "LootAroundJunk.esp");
 			sendMessage = (BGSMessage*)DH->LookupForm(0x0812, "LootAroundJunk.esp");
