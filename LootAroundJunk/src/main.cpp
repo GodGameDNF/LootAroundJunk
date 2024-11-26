@@ -17,6 +17,7 @@ namespace fs = std::filesystem;
 PlayerCharacter* p = nullptr;
 BSScript::IVirtualMachine* vm = nullptr;
 TESDataHandler* DH = nullptr;
+FavoritesManager* favoritesManager = nullptr;
 
 float getCount;
 float scrapCount;
@@ -49,7 +50,11 @@ TESGlobal* gLootActor = nullptr;
 TESGlobal* gLootFeaturedItem = nullptr;
 TESGlobal* gLootScrap = nullptr;
 TESGlobal* gLootPrint = nullptr;
+TESGlobal* gPipboyComponentSYNC = nullptr;
 BGSEquipSlot* GrenadeSlot = nullptr;
+
+BGSListForm* componentMaterialList = nullptr;
+std::vector<TESForm*> componentMaterials;
 
 BGSListForm* componentScrapList = nullptr;
 BGSListForm* componentFilterList = nullptr;
@@ -87,6 +92,8 @@ TESGlobal* gLoodRadMult = nullptr;
 BGSMessage* getMessage = nullptr;
 BGSMessage* sendMessage = nullptr;
 BGSMessage* twoMessage = nullptr;
+
+bool runingScriptToggle;
 
 struct RefrOrInventoryObj
 {
@@ -234,7 +241,22 @@ void RemoveAllScriptAddedForms(BGSListForm* list)
 	return func(list);
 }
 
-struct contLootStruct  // 상자템 마지막 정리를 위해 구조체 배열에 저장했다 처리함
+bool IsComponentFavorite(FavoritesManager* fm, TESBoundObject* bound)
+{
+	using func_t = decltype(&IsComponentFavorite);
+	REL::Relocation<func_t> func{ REL::ID(352046) };
+	return func(fm, bound);
+}
+
+void ToggleComponentFavorite(FavoritesManager* fm, TESBoundObject* bound)
+{
+	using func_t = decltype(&ToggleComponentFavorite);
+	REL::Relocation<func_t> func{ REL::ID(1084401) };
+	return func(fm, bound);
+}
+
+
+	struct contLootStruct  // 상자템 마지막 정리를 위해 구조체 배열에 저장했다 처리함
 {
 	BGSInventoryItem item;
 	bool bScrap;
@@ -388,6 +410,72 @@ void setComponentFilter(std::monostate)
 	}
 }
 
+// 글로벌 값이 켜져있다면 구성요소 필터를 설정할때
+void processingTagSYNC_ToFilter()
+{
+	//logger::info("구성요소 필터에서 동기화");
+
+	runingScriptToggle = true;  // 토글을 직접할때만 이벤트를 받게 하기 위해 변수 조절
+
+	//RemoveAllScriptAddedForms(componentFilterList); // 구성요소 제외 폼리스트를 삭제함
+
+	for (int i = 0; i < componentMaterials.size(); ++i) {
+		TESBoundObject* tempBound = (TESBoundObject*)componentMaterials[i];  // 구성요소 자체를 변수에 넣음
+		if (tempBound) {
+			TESForm* scrapComponent = componentScrapList->arrayOfForms[i];  // 구성요소의 스크랩재료를 변수에 넣음
+
+			bool existRemoveList = false;
+			for (TESForm* form : componentFilterList->arrayOfForms) { // 구성요소 제외 폼리스트에 해당 스크랩 재료가 있는지 확인함
+				if (form == scrapComponent) {
+					existRemoveList = true;
+					break;
+				}
+			}
+
+			if (IsComponentFavorite(favoritesManager, tempBound)) {        // 구성요소가 핍보이 구성요소 태그에 등록되어있다면
+				if (existRemoveList) {           // 있으면 없어야 하고 없으면 있어야함
+					//logger::info("토글해서 필터를 끔");
+					ToggleComponentFavorite(favoritesManager, tempBound);  // 두 값은 달라야함. 태그에 등록되어있는걸 취소시킴
+				}
+			} else {														// 구성요소가 핍보이 구성요소 태그에 등록되어있지 않다면
+				if (!existRemoveList) {                                     // 있으면 없어야 하고 없으면 있어야함
+					//logger::info("토글해서 필터를 켬");
+					ToggleComponentFavorite(favoritesManager, tempBound);  // 두 값은 달라야함. 태그에 등록되어있는걸 취소시킴
+				}
+			}
+		}
+	}
+
+	runingScriptToggle = false;
+
+	//setComponentFilter(std::monostate{});  // componentFilterList 폼리스트에 컴포넌트 추가가 끝났으니 필터 배열에 misc 아이템을 주입
+}
+
+// 핍보이에서 구성요소를 태그할떄 실행
+void processingTagSYNC_ToPipboy()
+{
+	//logger::info("핍보이에서 동기화");
+
+	RemoveAllScriptAddedForms(componentFilterList); // 구성요소 필터 제거용 폼리스트를 삭제함
+
+	for (int i = 0; i < componentMaterials.size(); ++i) {
+		TESBoundObject* tempBound = (TESBoundObject*)componentMaterials[i]; // 구성요소 자체를 변수에 넣음
+		if (tempBound) {
+			if (!IsComponentFavorite(favoritesManager, tempBound)) {
+				TESForm* scrapComponent = componentScrapList->arrayOfForms[i]; // 구성요소의 스크랩재료를 변수에 넣음
+
+				if (scrapComponent) {
+					componentFilterList->AddScriptAddedForm(scrapComponent); // 스크랩 재료를 스킵 폼리스트에 삽입
+					//logger::info("스킵 폼리스트에 추가");
+				}
+			}
+		}
+	}
+
+	setComponentFilter(std::monostate{});  // componentFilterList 폼리스트에 컴포넌트 추가가 끝났으니 필터 배열에 misc 아이템을 주입
+}
+
+
 // 구성재료 필터 선택 해제 상자를 열때 실행
 void fillContainer_ComponentFilter_Removed(std::monostate)
 {
@@ -424,7 +512,11 @@ void fillContainer_ComponentFilter_Removed_Close(std::monostate)
 	BSTArray<BGSInventoryItem> boxList = removedContainerInvList->data;
 
 	if (boxList.empty()) {
-		compoSkip_unorderdSet.clear();  // removed 박스가 비었으면 아이템을 다 빼서 필터 건게 없으니 필터배열을 지우고 종료
+		compoSkip_unorderdSet.clear(); // removed 박스가 비었으면 아이템을 다 빼서 필터 건게 없으니 필터배열을 지우고 종료
+		if (gPipboyComponentSYNC->value == 1) { // 구성요소 태그 동기화를 켰으면 배열을 처리함
+			processingTagSYNC_ToFilter();
+		}
+			
 		return;
 	}
 
@@ -437,7 +529,11 @@ void fillContainer_ComponentFilter_Removed_Close(std::monostate)
 		componentFilterList->AddScriptAddedForm(obj);
 	}
 
-	setComponentFilter(std::monostate{});  // removed 박스에 아이템 추가가 끝났으니 필터 배열에 misc 아이템을 주입
+	if (gPipboyComponentSYNC->value == 1) {  // 구성요소 태그 동기화를 켰으면 배열을 처리함
+		processingTagSYNC_ToFilter();
+	}
+
+	setComponentFilter(std::monostate{});  // componentFilterList 폼리스트에 컴포넌트 추가가 끝났으니 필터 배열에 misc 아이템을 주입
 }
 
 // 구성재료 필터 선택 상자를 열때 실행
@@ -445,11 +541,11 @@ void fillContainer_ComponentFilter_Added(std::monostate)
 {
 	RemoveAllItems(vm, 0, componentFilterCont_Added, nullptr, false);
 
-	std::unordered_set<TESForm*> checkComponent_unorderdSet;
+	std::unordered_set<TESForm*> checkComponent_unorderdSet; // 확인용 임시 배열
 
 	for (TESForm* component : componentScrapList->arrayOfForms) {
 		if (component) {
-			checkComponent_unorderdSet.insert(component);
+			checkComponent_unorderdSet.insert(component); // 확인용 임시배열에 스크랩 재료를 옮김
 		}
 	}
 
@@ -515,7 +611,11 @@ void fillContainer_ComponentFilter_Added_to_Removed(std::monostate)
 		componentFilterList->AddScriptAddedForm(bound);
 	}
 
-	setComponentFilter(std::monostate{});  // removed 박스에 아이템 추가가 끝났으니 필터 배열에 misc 아이템을 주입
+	if (gPipboyComponentSYNC->value == 1) {  // 구성요소 태그 동기화를 켰으면 배열을 처리함
+		processingTagSYNC_ToFilter();
+	}
+
+	setComponentFilter(std::monostate{});  // componentFilterList 폼리스트에 컴포넌트 추가가 끝났으니 필터 배열에 misc 아이템을 주입
 }
 
 // 근처의 ref를 검색함
@@ -1245,6 +1345,50 @@ void createFileIfNotExist(const std::string& filePath)
 	}
 }
 
+// 핍보이 잡동사니 탭에서 구성요소에 태그를 붙이거나 뗄때를 감지하고 호출됨
+class MyEventSink : public BSTEventSink<FavoriteMgr_Events::ComponentFavoriteEvent> 
+{
+public:
+
+	virtual BSEventNotifyControl ProcessEvent([[maybe_unused]] const FavoriteMgr_Events::ComponentFavoriteEvent& a_event, BSTEventSource<FavoriteMgr_Events::ComponentFavoriteEvent>*) override
+	{
+		if (gPipboyComponentSYNC->value == 1 && !runingScriptToggle) {
+			//logger::info("눌렀음");
+			processingTagSYNC_ToPipboy();
+		}
+		return BSEventNotifyControl::kContinue;
+	}
+};
+
+// 핍보이 구성요소 태그 이벤트 등록 + 컴포넌트 폼리스트를 벡터배열에 저장함
+void RegisterCustomSink()
+{
+	// public BSTEventSource< > 가 있는 싱글톤을 가져옴
+	favoritesManager = RE::FavoritesManager::GetSingleton();
+
+	// 이벤트 후킹용 클래스를 동적으로 생성
+	MyEventSink* mySink = new MyEventSink();
+
+	// 싱크를 FavoritesManager에 등록
+	favoritesManager->RegisterSink(mySink);
+
+	// 나중에 메모리를 해제할 때는 delete로 객체를 해제해야 합니다.
+	// delete mySink;  // 적절한 시점에 메모리 해제
+
+	// 폼리스트의 구성요소를 벡터 배열로 복사함
+	for (TESForm* component : componentMaterialList->arrayOfForms) {
+		if (component) {
+			componentMaterials.push_back(component);
+		}
+	}
+}
+
+void setPipboyTagSYNC(std::monostate)
+{
+	processingTagSYNC_ToPipboy();
+}
+
+
 void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 {
 	switch (msg->type) {
@@ -1271,6 +1415,7 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			gLootScrap = (TESGlobal*)DH->LookupForm(0x804, "LootAroundJunk.esp");
 			gLootPrint = (TESGlobal*)DH->LookupForm(0x806, "LootAroundJunk.esp");
 			gLootFeaturedItem = (TESGlobal*)DH->LookupForm(0x865, "LootAroundJunk.esp");
+			gPipboyComponentSYNC = (TESGlobal*)DH->LookupForm(0x88A, "LootAroundJunk.esp");
 
 			GrenadeSlot = (BGSEquipSlot*)DH->LookupForm(0x00046AAC, "Fallout4.esm");
 
@@ -1279,6 +1424,7 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			Alcohol = (BGSKeyword*)DH->LookupForm(0x0010C416, "Fallout4.esm");
 			gLootAlcohol = (TESGlobal*)DH->LookupForm(0x830, "LootAroundJunk.esp");
 
+			componentMaterialList = (BGSListForm*)DH->LookupForm(0x81A, "LootAroundJunk.esp");
 			componentScrapList = (BGSListForm*)DH->LookupForm(0x81B, "LootAroundJunk.esp");
 			componentFilterCont_Added = (TESObjectREFR*)DH->LookupForm(0x87E, "LootAroundJunk.esp");
 			componentFilterCont_Removed = (TESObjectREFR*)DH->LookupForm(0x87F, "LootAroundJunk.esp");
@@ -1319,6 +1465,8 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			createFileIfNotExist(getPath);
 			createFileIfNotExist(skipPath);
 
+			RegisterCustomSink(); // 핍보이 구성요소 태그 이벤트 등록
+
 			break;
 		}
 	case F4SE::MessagingInterface::kPostLoadGame:
@@ -1354,6 +1502,7 @@ bool RegisterPapyrusFunctions(RE::BSScript::IVirtualMachine* a_vm)
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "fillContainer_ComponentFilter_Added_to_Removed"sv, fillContainer_ComponentFilter_Added_to_Removed);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "fillContainer_ComponentFilter_Removed"sv, fillContainer_ComponentFilter_Removed);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "fillContainer_ComponentFilter_Removed_Close"sv, fillContainer_ComponentFilter_Removed_Close);
+	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "setPipboyTagSYNC"sv, setPipboyTagSYNC);
 
 	return true;
 }
