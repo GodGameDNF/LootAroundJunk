@@ -53,6 +53,9 @@ TESGlobal* gLootPrint = nullptr;
 TESGlobal* gPipboyComponentSYNC = nullptr;
 BGSEquipSlot* GrenadeSlot = nullptr;
 
+TESGlobal* gLootDisableInSettle = nullptr;
+TESObjectREFR* homeplateWorkshop = nullptr;
+
 BGSListForm* componentMaterialList = nullptr;
 std::vector<TESForm*> componentMaterials;
 
@@ -92,6 +95,8 @@ TESGlobal* gLoodRadMult = nullptr;
 BGSMessage* getMessage = nullptr;
 BGSMessage* sendMessage = nullptr;
 BGSMessage* twoMessage = nullptr;
+
+ActorValueInfo* ownedAV = nullptr;
 
 bool runingScriptToggle;
 
@@ -1289,9 +1294,38 @@ void saveVendorContainer()
 	}
 }
 
+// MCM에서 정착지 루팅을 막으면 확인하는 함수
+bool inSettlement()
+{
+	TESObjectREFR* workshopRef = Workshop::FindNearestValidWorkshop(*p);
+	if (!workshopRef) {
+		//logger::info("근처에 워크숍이 없음");
+		return false;
+	}
+
+	if (workshopRef == homeplateWorkshop) {
+		//logger::info("홈플레이트임");
+		return true; // 홈플레이트는 av로 처리가 안되서 홈플레이트 워크숍이 맞으면 true로 보냄
+	}
+
+	if (!Workshop::IsLocationWithinBuildableArea(*workshopRef, p->GetPosition())) {
+		//logger::info("건설 가능 지역이 아님");
+		return false;
+	}
+
+
+	float wAV = workshopRef->GetActorValue(*ownedAV); // 지금 홈플레이트에서 av가 1이 안됨
+	if (wAV > 0) {
+		//logger::info("가능한 지역");
+		return true;
+	}
+
+	return false;
+}
+
 void StartLoot(std::monostate)
 {
-	if (bLootRunning || gLootYES->value != 1) {
+	if (bLootRunning || gLootYES->value == 0 || (gLootDisableInSettle->value == 1 && inSettlement() == true)) { // inSettlement() - MCM에서 정착지 루팅 방지를 켰다면 확인
 		return;
 	} else {
 		bLootRunning = true;
@@ -1388,7 +1422,6 @@ void setPipboyTagSYNC(std::monostate)
 	processingTagSYNC_ToPipboy();
 }
 
-
 void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 {
 	switch (msg->type) {
@@ -1396,6 +1429,7 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 		{
 			p = PlayerCharacter::GetSingleton();
 			DH = RE::TESDataHandler::GetSingleton();
+			ownedAV = ActorValue::GetSingleton()->workshopPlayerOwned;
 
 			char resultBuf[256];
 			uint32_t tInt = GetModuleFileNameA(GetModuleHandle(NULL), resultBuf, sizeof(resultBuf));
@@ -1416,6 +1450,9 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 			gLootPrint = (TESGlobal*)DH->LookupForm(0x806, "LootAroundJunk.esp");
 			gLootFeaturedItem = (TESGlobal*)DH->LookupForm(0x865, "LootAroundJunk.esp");
 			gPipboyComponentSYNC = (TESGlobal*)DH->LookupForm(0x88A, "LootAroundJunk.esp");
+
+			gLootDisableInSettle = (TESGlobal*)DH->LookupForm(0x842, "LootAroundJunk.esp");
+			homeplateWorkshop = (TESObjectREFR*)DH->LookupForm(0x0141DF5, "Fallout4.esm");
 
 			GrenadeSlot = (BGSEquipSlot*)DH->LookupForm(0x00046AAC, "Fallout4.esm");
 
