@@ -1237,21 +1237,27 @@ void runLooting_Slow(std::vector<TESObjectREFR*> refArray)
 // 스크랩박스에 있는 잡동사니를 스크랩함
 uint32_t scrapMISC(std::monostate)
 {
-	BGSInventoryList* temp = scrapActor->inventoryList;
+	BGSInventoryList* scrapActorList = scrapActor->inventoryList;
+	
+	if (!scrapActorList) {
+		//logger::info("nullptr InvList On Load");
+		scrapActorList = initialize_FilterInvList(scrapActor);
+		return 0;
+	}
 
 	uint32_t scrapCount = 0;
 
-	BSTArray<BGSInventoryItem> miscList = temp->data;
+	BSTArray<BGSInventoryItem> miscList = scrapActorList->data;
 	if (!miscList.empty()) {
 		for (BGSInventoryItem bItem : miscList) {
 			TESBoundObject* obj = bItem.object;
 
 			stl::enumeration<ENUM_FORM_ID, std::uint8_t> type = obj->formType;
 
-			if (obj->formType != ENUM_FORM_ID::kMISC) {
+			if (!obj || obj->formType != ENUM_FORM_ID::kMISC) {
 				continue;  // 잡동사니가 아니면 리턴
 			}
-
+			
 			BSTArray<BSTTuple<TESForm*, BGSTypedFormValuePair::SharedVal>>* compoDatas = ((TESObjectMISC*)obj)->componentData;
 			if (!compoDatas || compoDatas->empty()) {
 				continue;  // 재료 배열이 없거나 비어있으면 리턴
@@ -1267,11 +1273,27 @@ uint32_t scrapMISC(std::monostate)
 					continue;
 				}
 
-				FormOrInventoryObj tempObj;
-				tempObj.form = compoForm;
-				AddItemVM(vm, 0, p, tempObj, count, true);
+				uint32_t index;
+				auto optionalIndex = componentMaterialList->GetItemIndex(*compoForm);
+				if (optionalIndex.has_value()) {
+					index = optionalIndex.value();
+				} else {
+					continue;
+				}
 
-				scrapCount += count;
+				TESForm* scrapForm = componentScrapList->arrayOfForms[index];
+
+				uint32_t addedCount = count * bItem.GetCount();
+				if (addedCount < 1) {
+					continue;
+				}
+
+				FormOrInventoryObj tempObj;
+				tempObj.form = scrapForm;
+
+				AddItemVM(vm, 0, p, tempObj, addedCount, true);
+
+				scrapCount += addedCount;
 			}
 		}
 	}
@@ -1323,14 +1345,8 @@ bool inSettlement()
 	return false;
 }
 
-void StartLoot(std::monostate)
+void runLooting()
 {
-	if (bLootRunning || gLootYES->value == 0 || (gLootDisableInSettle->value == 1 && inSettlement() == true)) { // inSettlement() - MCM에서 정착지 루팅 방지를 켰다면 확인
-		return;
-	} else {
-		bLootRunning = true;
-	}
-
 	getCount = 0;
 	scrapCount = 0;
 
@@ -1369,6 +1385,29 @@ void StartLoot(std::monostate)
 	AddChild(questNode, lootQuest, 0);
 
 	bLootRunning = false;
+}
+
+void StartLoot(std::monostate)
+{
+	if (bLootRunning || gLootYES->value == 0 || (gLootDisableInSettle->value == 1 && inSettlement() == true)) { // inSettlement() - MCM에서 정착지 루팅 방지를 켰다면 확인
+		return;
+	} else {
+		bLootRunning = true;
+	}
+
+	runLooting();
+}
+
+
+void StartLootHotKey(std::monostate)
+{
+	if (bLootRunning) {  // 단축키 루팅은 루팅중인지만 확인함
+		return;
+	} else {
+		bLootRunning = true;
+	}
+
+	runLooting();
 }
 
 void createFileIfNotExist(const std::string& filePath)
@@ -1509,11 +1548,25 @@ void OnF4SEMessage(F4SE::MessagingInterface::Message* msg)
 	case F4SE::MessagingInterface::kPostLoadGame:
 		{
 			setComponentFilter(std::monostate{});  // 잡동사니의 구성요소에 대한 필터를 removed 상자에 든 아이템으로 구성함
+
+			BGSInventoryList* scrapActorList = scrapActor->inventoryList;
+			if (!scrapActorList) {  // 스크랩 액터 초기화가 안됐으면 인벤토리 리스트 만들어서 할당함
+				//logger::info("nullptr InvList On Load");
+				scrapActorList = initialize_FilterInvList(scrapActor);
+			}
+
 			break;
 		}
 	case F4SE::MessagingInterface::kNewGame:
 		{
 			setComponentFilter(std::monostate{});
+
+			BGSInventoryList* scrapActorList = scrapActor->inventoryList;
+			if (!scrapActorList) {  // 스크랩 액터 초기화가 안됐으면 인벤토리 리스트 만들어서 할당함
+				//logger::info("nullptr InvList On Load");
+				scrapActorList = initialize_FilterInvList(scrapActor);
+			}
+
 			break;
 		}
 	}
@@ -1530,6 +1583,8 @@ bool RegisterPapyrusFunctions(RE::BSScript::IVirtualMachine* a_vm)
 	//logger::info("Offset for ID 1067039: {}", offset);
 
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "StartLoot"sv, StartLoot);
+	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "StartLootHotKey"sv, StartLootHotKey);
+
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "FilterContainerSetting"sv, FilterContainerSetting);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "FillContainerfromFile"sv, FillContainerfromFile);
 	a_vm->BindNativeMethod("LAJ_LootF4SE"sv, "setComponentFilter"sv, setComponentFilter);
